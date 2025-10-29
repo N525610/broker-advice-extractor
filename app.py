@@ -13,30 +13,42 @@ def extract_text_from_pdf(file):
 
 def extract_fields(text):
     def search(pattern, default=""):
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
         return match.group(1).strip() if match else default
 
+    # Dynamically extract buyer and seller names and ABNs
+    buyer_info = re.search(r"\*\*(.*?)\*\*.*?ABN:\s*(\d{11})", text, re.IGNORECASE | re.DOTALL)
+    seller_info = re.findall(r"\*\*(.*?)\*\*.*?ABN:\s*(\d{11})", text, re.IGNORECASE | re.DOTALL)
+
+    buyer_name = buyer_info.group(1).strip() if buyer_info else ""
+    buyer_abn = buyer_info.group(2).strip() if buyer_info else ""
+
+    # Assuming seller is the second match in the list
+    seller_name = seller_info[1][0].strip() if len(seller_info) > 1 else ""
+    seller_abn = seller_info[1][1].strip() if len(seller_info) > 1 else ""
+
     fields = {
-        "Buyer": "Allied Pinnacle",
-        "Buyer ABN": search(r"ALLIED PINNACLE.*?ABN:\s*(\d+)", ""),
-        "Seller": "Cargill Australia",
-        "Seller ABN": search(r"CARGILL AUSTRALIA LTD.*?ABN:\s*(\d+)", ""),
-        "Date": search(r"F1017970\s+(\d{1,2} \w+ \d{4})", ""),
-        "Commodity": "Wheat 25/26",
-        "Quantity": "3000.00MT (MIN/MAX)",
-        "Price": "$340.00/MT",
-        "Delivery": "01/12/2025 - 29/01/2026",
-        "Freight": "N/A",
-        "Brokerage": "$0.50/MT",
-        "Quality": search(r"Quality:\s*(.+)"),
-        "Payment": search(r"Payment:\s*(.+)"),
-        "Insurance": search(r"Insurance:\s*(.+)"),
-        "Storage": search(r"Storage:\s*(.+)"),
-        "Weights": search(r"Weights:\s*(.+)"),
-        "Special Conditions": search(r"Special Conditions:\s*(.+)"),
-        "Rules": search(r"Rules:\s*(.+)")
+        "Buyer": buyer_name,
+        "Buyer ABN": buyer_abn,
+        "Seller": seller_name,
+        "Seller ABN": seller_abn,
+        "Date": search(r"Advice No:\s+\*\*(.*?)\*\*\s+(\d{1,2} \w+ \d{4})", ""),
+        "Commodity": search(r"Commodity:\*\*\s*(.+?)\*\*", ""),
+        "Quality": search(r"Quality:\*\*\s*(.+?)\*\*", ""),
+        "Quantity": search(r"Quantity:\*\*\s*(.+?)\*\*", ""),
+        "Price": search(r"Price:\*\*\s*(.+?)\*\*", ""),
+        "Delivery": search(r"Delivery:\*\*\s*(.+?)\*\*", ""),
+        "Payment": search(r"Payment:\*\*\s*(.+?)\*\*", ""),
+        "Insurance": search(r"Insurance:\*\*\s*(.+?)\*\*", ""),
+        "Freight": search(r"Freight:\*\*\s*(.+?)\*\*", ""),
+        "Storage": search(r"Storage:\*\*\s*(.+?)\*\*", ""),
+        "Weights": search(r"Weights:\*\*\s*(.+?)\*\*", ""),
+        "Special Conditions": search(r"Special Conditions:\*\*\s*(.+?)\*\*", ""),
+        "Brokerage": search(r"Brokerage:\*\*\s*(.+?)\*\*", ""),
+        "Rules": search(r"Rules:\*\*\s*(.+?)\\n", "")
     }
 
+    # Format date if found
     if fields["Date"]:
         try:
             fields["Date"] = pd.to_datetime(fields["Date"]).strftime("%d/%m/%Y")
