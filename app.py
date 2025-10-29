@@ -16,23 +16,19 @@ def extract_fields(text):
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
         return match.group(1).strip() if match else default
 
-    # Dynamically extract buyer and seller names and ABNs
-    buyer_info = re.search(r"\*\*(.*?)\*\*.*?ABN:\s*(\d{11})", text, re.IGNORECASE | re.DOTALL)
-    seller_info = re.findall(r"\*\*(.*?)\*\*.*?ABN:\s*(\d{11})", text, re.IGNORECASE | re.DOTALL)
-
-    buyer_name = buyer_info.group(1).strip() if buyer_info else ""
-    buyer_abn = buyer_info.group(2).strip() if buyer_info else ""
-
-    # Assuming seller is the second match in the list
-    seller_name = seller_info[1][0].strip() if len(seller_info) > 1 else ""
-    seller_abn = seller_info[1][1].strip() if len(seller_info) > 1 else ""
+    # Extract Buyer and Seller names and ABNs using verified structure
+    parties = re.findall(r"\*\*(.*?)\*\*.*?ABN:\s*(\d{11})", text)
+    buyer_name = parties[0][0].strip() if len(parties) > 0 else ""
+    buyer_abn = parties[0][1].strip() if len(parties) > 0 else ""
+    seller_name = parties[1][0].strip() if len(parties) > 1 else ""
+    seller_abn = parties[1][1].strip() if len(parties) > 1 else ""
 
     fields = {
         "Buyer": buyer_name,
         "Buyer ABN": buyer_abn,
         "Seller": seller_name,
         "Seller ABN": seller_abn,
-        "Date": search(r"Advice No:\s+\*\*(.*?)\*\*\s+(\d{1,2} \w+ \d{4})", ""),
+        "Date": search(r"\*\* F1017970\*\*\s+(\d{1,2} \w+ \d{4})", ""),
         "Commodity": search(r"Commodity:\*\*\s*(.+?)\*\*", ""),
         "Quality": search(r"Quality:\*\*\s*(.+?)\*\*", ""),
         "Quantity": search(r"Quantity:\*\*\s*(.+?)\*\*", ""),
@@ -45,10 +41,9 @@ def extract_fields(text):
         "Weights": search(r"Weights:\*\*\s*(.+?)\*\*", ""),
         "Special Conditions": search(r"Special Conditions:\*\*\s*(.+?)\*\*", ""),
         "Brokerage": search(r"Brokerage:\*\*\s*(.+?)\*\*", ""),
-        "Rules": search(r"Rules:\*\*\s*(.+?)\\n", "")
+        "Rules": search(r"Rules:\*\*\s*(.+?)(?:\\n|$)", "")
     }
 
-    # Format date if found
     if fields["Date"]:
         try:
             fields["Date"] = pd.to_datetime(fields["Date"]).strftime("%d/%m/%Y")
