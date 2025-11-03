@@ -15,6 +15,11 @@ MELBOURNE SYDNEY BRISBANE ADELAIDE PERTH HOBART CANBERRA RHODES TOOWOOMBA
 NEXT_SEP_RE = re.compile(r"(LOCKED|GPO|PO\s+BOX|ABN)\b", re.IGNORECASE)
 CONTACT_RE  = re.compile(r"CONTACT\b", re.IGNORECASE)
 SUFFIXES = {"PTY","LTD","LIMITED","TRUST","COMPANY","CO","INC","LLC","LLP","AUSTRALIA"}
+ADDRESS_HINTS = re.compile(
+    r"\b(PO BOX|GPO|LOCKED BAG|STREET|ROAD|RD|AVE|AVENUE|DRIVE|DR|LANE|LN|"
+    r"QLD|NSW|VIC|SA|WA|TAS|ACT|NT|\d{3,4})\b",
+    re.IGNORECASE
+)
 
 # -----------------------------------------
 # PDF Text Extraction & Normalization
@@ -37,6 +42,10 @@ def extract_text_from_pdf(file) -> str:
 # Party (Buyer/Seller) Extraction
 # -----------------------------------------
 def extract_parties(text: str):
+    """
+    Detect Buyer/Seller by pairing each ABN with the nearest preceding uppercase
+    company line. Prefer the full uppercase line; fall back to suffix/token logic.
+    """
     abn_matches = list(re.finditer(r"\bABN\s*:\s*((?:\d\s*){11})\b", text, re.IGNORECASE))
     parties = []
 
@@ -44,9 +53,11 @@ def extract_parties(text: str):
         idx = m.start()
         abn = re.sub(r"\D", "", m.group(1))
 
-        if idx < 300:  # skip broker header ABN
+        # Skip obvious header ABN (broker letterhead) near the top
+        if idx < 300:
             continue
 
+        # Look back a bit from the ABN
         win = text[max(0, idx - 280): idx]
 
         # Start after last CONTACT in the window to avoid person names
@@ -55,46 +66,51 @@ def extract_parties(text: str):
             win = win[contact_hits[-1].end():]
 
         # Keep text before the next address marker (LOCKED/GPO/PO BOX/ABN)
-        segment = NEXT_SEP_RE.split(win, maxsplit=1)[0]
+        segment = NEXT_SEP_RE.split(win, maxsplit=1)[0].strip()
 
-        # Tokenize and keep ALL-CAPS tokens that are not address words
-        tokens = [t for t in re.split(r"[^A-Za-z]+", segment) if t]
-        uc_tokens = [t for t in tokens if t.isupper() and t not in ADDRESS_WORDS]
+        # ---------- PRIMARY: line-based capture ----------
+        # Split the segment by lines and pick the last uppercase, non-address line
+        company_line = ""
+        lines = [ln.strip() for ln in segment.split("\n") if ln.strip()]
+        for ln in reversed(lines):
+            up = ln.upper()
+            if "CONTACT" in up:
+                continue
+            if not up.isupper():
+                continue
+            if ADDRESS_HINTS.search(ln):
+                continue
+            # require at least two words to reduce false positives
+            if len(ln.split()) >= 2:
+                company_line = ln
+                break
 
-        name = ""
-        if uc_tokens:
-            # Find the last suffix token (LTD/PTY/etc.). We will include it AND
-            # at least one non-suffix token before it, up to 3-4 tokens total.
-            suffix_positions = [i for i, t in enumerate(uc_tokens) if t in SUFFIXES]
-            if suffix_positions:
-                suf_idx = suffix_positions[-1]
-                # Walk backwards to include at least one non-suffix
-                start = suf_idx
-                included = [uc_tokens[suf_idx]]
-                back = suf_idx - 1
-                while back >= 0 and len(included) < 4:
-                    included.insert(0, uc_tokens[back])
-                    # Ensure at least one non-suffix is included
-                    if any(tok not in SUFFIXES for tok in included):
-                        # keep extending a little more context up to 4 tokens
-                        back -= 1
-                        if len(included) >= 3:
-                            break
-                    else:
-                        back -= 1
-                # If by some chance we captured only suffixes (rare), add one more token if available
-                if all(tok in SUFFIXES for tok in included) and suf_idx - 2 >= 0:
-                    included.insert(0, uc_tokens[suf_idx - 2])
-                name = " ".join(included)
-            else:
-                # No explicit suffix; take the last up to 4 tokens (helps 3+ word companies)
-                take = min(4, len(uc_tokens))
-                name = " ".join(uc_tokens[-take:])
+        if company_line:
+            name = company_line
+        else:
+            # ---------- FALLBACK: suffix/token capture ----------
+            tokens = [t for t in re.split(r"[^A-Za-z]+", segment) if t]
+            uc_tokens = [t for t in tokens if t.isupper() and t not in ADDRESS_WORDS]
+            name = ""
+            if uc_tokens:
+                suffix_positions = [i for i, t in enumerate(uc_tokens) if t in SUFFIXES]
+                if suffix_positions:
+                    suf_idx = suffix_positions[-1]
+                    # include suffix + up to 3 tokens before (ensures at least one non-suffix)
+                    start = max(0, suf_idx - 3)
+                    slice_tokens = uc_tokens[start:suf_idx + 1]
+                    # ensure at least one non-suffix present
+                    if all(tok in SUFFIXES for tok in slice_tokens) and start > 0:
+                        slice_tokens = uc_tokens[start - 1:suf_idx + 1]
+                    name = " ".join(slice_tokens)
+                else:
+                    # no explicit suffix; take last up to 4 tokens
+                    name = " ".join(uc_tokens[-min(4, len(uc_tokens)):])
 
         if name and len(name.split()) >= 2:
             parties.append((name, abn, idx))
 
-    # De-duplicate by ABN and sort
+    # De-duplicate by ABN and sort by position
     seen, ordered = set(), []
     for n, a, i in parties:
         if a not in seen:
@@ -107,7 +123,7 @@ def extract_parties(text: str):
     seller_name = ordered[-1][0] if len(ordered) > 1 else ""
     seller_abn  = ordered[-1][1] if len(ordered) > 1 else ""
     return buyer_name, buyer_abn, seller_name, seller_abn
-
+    
 # -----------------------------------------
 # Field Extraction
 # -----------------------------------------
