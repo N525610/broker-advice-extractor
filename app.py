@@ -25,20 +25,18 @@ def extract_text_from_pdf(file) -> str:
     text = "\n".join(page.get_text("text") for page in doc)
     # Normalize for robust regex matching
     text = text.replace("\xa0", " ")
-    text = re.sub(r"[：﹕]", ":", text)   # normalize colon variants
-    text = re.sub(r"[–—−]", "-", text)   # normalize dash variants
-    text = re.sub(r"[ \t]+", " ", text)  # collapse spaces
-    text = re.sub(r"\s*\n\s*", "\n", text)  # tidy newlines
+    text = text.replace("**", "\n")        # <<< fix: keep block boundaries from bold markers
+    text = re.sub(r"[：﹕]", ":", text)     # normalize colon variants
+    text = re.sub(r"[–—−]", "-", text)     # normalize dash variants
+    text = re.sub(r"[ \t]+", " ", text)    # collapse spaces
+    text = re.sub(r"\s*\n\s*", "\n", text) # tidy newlines
     return text
+
 
 # -----------------------------------------
 # Party (Buyer/Seller) Extraction
 # -----------------------------------------
 def extract_parties(text: str):
-    """
-    Detect Buyer/Seller by pairing each ABN with the nearest preceding uppercase
-    company phrase, ignoring address/location tokens and contact names.
-    """
     abn_matches = list(re.finditer(r"\bABN\s*:\s*((?:\d\s*){11})\b", text, re.IGNORECASE))
     parties = []
 
@@ -46,14 +44,12 @@ def extract_parties(text: str):
         idx = m.start()
         abn = re.sub(r"\D", "", m.group(1))
 
-        # Skip obvious header ABN (broker letterhead) near the top
-        if idx < 300:
+        if idx < 300:  # skip broker header ABN
             continue
 
-        # Look back a bit from the ABN
         win = text[max(0, idx - 280): idx]
 
-        # If 'CONTACT' appears in the window, start after the last one (avoid person names)
+        # Start after last CONTACT in the window to avoid person names
         contact_hits = list(CONTACT_RE.finditer(win))
         if contact_hits:
             win = win[contact_hits[-1].end():]
@@ -67,23 +63,38 @@ def extract_parties(text: str):
 
         name = ""
         if uc_tokens:
-            # Prefer a company suffix (LTD/PTY/etc.): take suffix + up to 2 tokens before it
-            suffix_index = -1
-            for i, t in enumerate(uc_tokens):
-                if t in SUFFIXES:
-                    suffix_index = i
-            if suffix_index != -1:
-                start = max(0, suffix_index - 2)
-                name = " ".join(uc_tokens[start: suffix_index + 1])
+            # Find the last suffix token (LTD/PTY/etc.). We will include it AND
+            # at least one non-suffix token before it, up to 3-4 tokens total.
+            suffix_positions = [i for i, t in enumerate(uc_tokens) if t in SUFFIXES]
+            if suffix_positions:
+                suf_idx = suffix_positions[-1]
+                # Walk backwards to include at least one non-suffix
+                start = suf_idx
+                included = [uc_tokens[suf_idx]]
+                back = suf_idx - 1
+                while back >= 0 and len(included) < 4:
+                    included.insert(0, uc_tokens[back])
+                    # Ensure at least one non-suffix is included
+                    if any(tok not in SUFFIXES for tok in included):
+                        # keep extending a little more context up to 4 tokens
+                        back -= 1
+                        if len(included) >= 3:
+                            break
+                    else:
+                        back -= 1
+                # If by some chance we captured only suffixes (rare), add one more token if available
+                if all(tok in SUFFIXES for tok in included) and suf_idx - 2 >= 0:
+                    included.insert(0, uc_tokens[suf_idx - 2])
+                name = " ".join(included)
             else:
-                # Otherwise, last up to 3 tokens (covers names like "ALLIED PINNACLE")
-                name = " ".join(uc_tokens[-min(3, len(uc_tokens)):])
+                # No explicit suffix; take the last up to 4 tokens (helps 3+ word companies)
+                take = min(4, len(uc_tokens))
+                name = " ".join(uc_tokens[-take:])
 
-        # Basic sanity: require at least 2 words to reduce false positives
         if name and len(name.split()) >= 2:
             parties.append((name, abn, idx))
 
-    # De-duplicate by ABN and sort by position
+    # De-duplicate by ABN and sort
     seen, ordered = set(), []
     for n, a, i in parties:
         if a not in seen:
