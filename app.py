@@ -163,7 +163,6 @@ def _parse_text_date(s: str) -> str:
     Returns '' if no parse.
     """
     s = _strip_day_suffix(s).strip()
-    # e.g., 'DECEMBER 1 2025' or '1 DECEMBER 2025' or '1 Dec 2025'
     m1 = re.search(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})\b", s, re.IGNORECASE)
     m2 = re.search(r"\b([A-Za-z]{3,9})\s+(\d{1,2})\s+(\d{4})\b", s, re.IGNORECASE)
     dd = mm = yyyy = None
@@ -181,7 +180,7 @@ def _parse_text_date(s: str) -> str:
 
 def _format_price(val: str) -> str:
     # pick first currency amount like $340.00 or A$ 340
-    m = re.search(r"(A\\$|\\$)\\s*([0-9][0-9,]*\\.?\\d*)", val, re.IGNORECASE)
+    m = re.search(r"(A\$|\$)\s*([0-9][0-9,]*\.?\d*)", val, re.IGNORECASE)
     if not m:
         return val
     amount = m.group(2).replace(",", "")
@@ -194,7 +193,7 @@ def _format_price(val: str) -> str:
 
 def _format_quantity(val: str) -> str:
     # find first number; keep (MIN/MAX) if present
-    m = re.search(r"([0-9][0-9,]*\\.?\\d*)", val)
+    m = re.search(r"([0-9][0-9,]*\.?\d*)", val)
     out = val
     if m:
         num = m.group(1).replace(",", "")
@@ -203,20 +202,18 @@ def _format_quantity(val: str) -> str:
         except:
             pass
         out = f"{num}mt"
-        if re.search(r"\\bMIN/MAX\\b", val, re.IGNORECASE):
+        if re.search(r"\bMIN/MAX\b", val, re.IGNORECASE):
             out += " (MIN/MAX)"
     return out
 
 def _format_delivery(val: str) -> str:
     # extract two dates from a phrase like 'DECEMBER 1ST 2025 TO JANUARY 29TH 2026'
-    # or '1 Dec 2025 to 29 Jan 2026'
-    # we'll look for the first two recognizable dates
-    # normalize separators
+    # or '1 Dec 2025 to 29 Jan 2026'; if month-only, output MM/YYYY - MM/YYYY
     seg = val.replace("—", "-").replace(" to ", " TO ").replace("–", "-")
-    # find date tokens
+    # First try to find two day-level dates
     date_tokens = []
-    # patterns like 'DECEMBER 1ST 2025' or '1 Dec 2025'
-    for m in re.finditer(r"([A-Za-z]{3,9}\\s+\\d{1,2}(?:st|nd|rd|th)?\\s+\\d{4}|\\d{1,2}\\s+[A-Za-z]{3,9}\\s+\\d{4})", seg, re.IGNORECASE):
+    for m in re.finditer(r"([A-Za-z]{3,9}\s+\d{1,2}(?:st|nd|rd|th)?\s+\d{4}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",
+                         seg, re.IGNORECASE):
         parsed = _parse_text_date(m.group(0))
         if parsed:
             date_tokens.append(parsed)
@@ -224,12 +221,20 @@ def _format_delivery(val: str) -> str:
             break
     if len(date_tokens) == 2:
         return f"{date_tokens[0]} - {date_tokens[1]}"
-    # fallback: leave original if we failed to find two dates
+    # Else, try Month Year -> Month Year
+    m = re.search(r"([A-Za-z]{3,9})\s+(\d{4})\s+TO\s+([A-Za-z]{3,9})\s+(\d{4})", seg, re.IGNORECASE)
+    if m:
+        m1, y1, m2, y2 = m.group(1), m.group(2), m.group(3), m.group(4)
+        mm1 = _MONTHS.get(m1.upper(), "")
+        mm2 = _MONTHS.get(m2.upper(), "")
+        if mm1 and mm2:
+            return f"{mm1}/{y1} - {mm2}/{y2}"
+    # fallback: leave original if nothing matched
     return val
 
 def _format_brokerage(val: str) -> str:
     # find A$ or $ amount; output A$X.XX/MT (EXCL GST)
-    m = re.search(r"(A\\$|\\$)\\s*([0-9][0-9,]*\\.?\\d*)", val, re.IGNORECASE)
+    m = re.search(r"(A\$|\$)\s*([0-9][0-9,]*\.?\d*)", val, re.IGNORECASE)
     if not m:
         return val
     amount = m.group(2).replace(",", "")
