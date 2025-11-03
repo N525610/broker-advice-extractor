@@ -145,6 +145,117 @@ def extract_fields(text: str) -> dict:
     return fields
 
 # -----------------------------------------
+# Formatting Helpers
+# -----------------------------------------
+_MONTHS = {
+    'JANUARY': '01','FEBRUARY': '02','MARCH': '03','APRIL': '04','MAY': '05','JUNE': '06',
+    'JULY': '07','AUGUST': '08','SEPTEMBER': '09','OCTOBER': '10','NOVEMBER': '11','DECEMBER': '12',
+    'JAN': '01','FEB': '02','MAR': '03','APR': '04','MAY': '05','JUN': '06',
+    'JUL': '07','AUG': '08','SEP': '09','SEPT': '09','OCT': '10','NOV': '11','DEC': '12',
+}
+
+def _strip_day_suffix(s: str) -> str:
+    return re.sub(r"(\d{1,2})(st|nd|rd|th)", r"\1", s, flags=re.IGNORECASE)
+
+def _parse_text_date(s: str) -> str:
+    """
+    Parse dates like 'DECEMBER 1ST 2025' or '1 Dec 2025' to 'dd/mm/YYYY'.
+    Returns '' if no parse.
+    """
+    s = _strip_day_suffix(s).strip()
+    # e.g., 'DECEMBER 1 2025' or '1 DECEMBER 2025' or '1 Dec 2025'
+    m1 = re.search(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})\b", s, re.IGNORECASE)
+    m2 = re.search(r"\b([A-Za-z]{3,9})\s+(\d{1,2})\s+(\d{4})\b", s, re.IGNORECASE)
+    dd = mm = yyyy = None
+    if m1:
+        dd, mon, yyyy = m1.group(1), m1.group(2), m1.group(3)
+    elif m2:
+        mon, dd, yyyy = m2.group(1), m2.group(2), m2.group(3)
+    if not (dd and yyyy and mon):
+        return ""
+    mm = _MONTHS.get(mon.upper(), "")
+    if not mm:
+        return ""
+    dd = f"{int(dd):02d}"
+    return f"{dd}/{mm}/{yyyy}"
+
+def _format_price(val: str) -> str:
+    # pick first currency amount like $340.00 or A$ 340
+    m = re.search(r"(A\\$|\\$)\\s*([0-9][0-9,]*\\.?\\d*)", val, re.IGNORECASE)
+    if not m:
+        return val
+    amount = m.group(2).replace(",", "")
+    try:
+        amount = f"{float(amount):.2f}"
+    except:
+        pass
+    # per your spec: lowercase /mt
+    return f"${amount}/mt"
+
+def _format_quantity(val: str) -> str:
+    # find first number; keep (MIN/MAX) if present
+    m = re.search(r"([0-9][0-9,]*\\.?\\d*)", val)
+    out = val
+    if m:
+        num = m.group(1).replace(",", "")
+        try:
+            num = f"{float(num):.2f}"
+        except:
+            pass
+        out = f"{num}mt"
+        if re.search(r"\\bMIN/MAX\\b", val, re.IGNORECASE):
+            out += " (MIN/MAX)"
+    return out
+
+def _format_delivery(val: str) -> str:
+    # extract two dates from a phrase like 'DECEMBER 1ST 2025 TO JANUARY 29TH 2026'
+    # or '1 Dec 2025 to 29 Jan 2026'
+    # we'll look for the first two recognizable dates
+    # normalize separators
+    seg = val.replace("—", "-").replace(" to ", " TO ").replace("–", "-")
+    # find date tokens
+    date_tokens = []
+    # patterns like 'DECEMBER 1ST 2025' or '1 Dec 2025'
+    for m in re.finditer(r"([A-Za-z]{3,9}\\s+\\d{1,2}(?:st|nd|rd|th)?\\s+\\d{4}|\\d{1,2}\\s+[A-Za-z]{3,9}\\s+\\d{4})", seg, re.IGNORECASE):
+        parsed = _parse_text_date(m.group(0))
+        if parsed:
+            date_tokens.append(parsed)
+        if len(date_tokens) == 2:
+            break
+    if len(date_tokens) == 2:
+        return f"{date_tokens[0]} - {date_tokens[1]}"
+    # fallback: leave original if we failed to find two dates
+    return val
+
+def _format_brokerage(val: str) -> str:
+    # find A$ or $ amount; output A$X.XX/MT (EXCL GST)
+    m = re.search(r"(A\\$|\\$)\\s*([0-9][0-9,]*\\.?\\d*)", val, re.IGNORECASE)
+    if not m:
+        return val
+    amount = m.group(2).replace(",", "")
+    try:
+        amount = f"{float(amount):.2f}"
+    except:
+        pass
+    return f"A${amount}/MT (EXCL GST)"
+
+def format_output(fields: dict) -> dict:
+    out = dict(fields)
+    # Price
+    if out.get("Price"):
+        out["Price"] = _format_price(out["Price"])
+    # Quantity
+    if out.get("Quantity"):
+        out["Quantity"] = _format_quantity(out["Quantity"])
+    # Delivery
+    if out.get("Delivery"):
+        out["Delivery"] = _format_delivery(out["Delivery"])
+    # Brokerage
+    if out.get("Brokerage"):
+        out["Brokerage"] = _format_brokerage(out["Brokerage"])
+    return out
+
+# -----------------------------------------
 # Excel Output
 # -----------------------------------------
 def generate_excel(fields: dict) -> io.BytesIO:
@@ -166,6 +277,7 @@ uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 if uploaded_file:
     text = extract_text_from_pdf(uploaded_file)
     fields = extract_fields(text)
+    fields = format_output(fields)   # <-- Apply your display formatting here
 
     st.subheader("Extracted Fields")
     for key, value in fields.items():
